@@ -1,0 +1,20 @@
+[project]
+name = "pdf-qa-rag"
+version = "0.1.0"
+description = "Simple PDF Question Answering RAG app using LangChain, FAISS, HuggingFace embeddings, Groq LLM, and Streamlit."
+requires-python = "==3.11.6"
+dependencies = [
+    "langchain==1.2.15",
+    "langchain-community==0.4.1",
+    "langchain-core==1.3.0",
+    "langchain-groq==1.1.2",
+    "python-dotenv==1.2.2",
+    "langchain-huggingface==0.3.1",
+    "faiss-cpu==1.8.0",
+    "pypdf==5.5.0",
+    "sentence-transformers==3.4.1",
+    "streamlit==1.44.1",
+]
+
+[tool.uv]
+package = false
