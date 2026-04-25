@@ -1,5 +1,5 @@
 """
-Simple PDF Question Answering RAG app.
+Simple PDF Question Answering RAG app with chat history.
 
 Pipeline:
 1. User uploads a PDF in the Streamlit UI.
@@ -8,8 +8,8 @@ Pipeline:
 4. HuggingFace sentence-transformers/all-MiniLM-L6-v2 generates embeddings.
 5. FAISS stores the embeddings for similarity search.
 6. The most relevant chunks for the user's question are retrieved.
-7. The retrieved context is sent to a Groq LLM along with the question.
-8. The LLM's answer is displayed in the Streamlit UI.
+7. The retrieved context + previous chat turns are sent to a Groq LLM.
+8. The LLM's answer is shown and added to the on-screen chat history.
 """
 
 # Standard library imports
@@ -28,9 +28,9 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter  # Splits te
 from langchain_huggingface import HuggingFaceEmbeddings  # Embedding model wrapper
 from langchain_community.vectorstores import FAISS  # In-memory vector store
 from langchain_groq import ChatGroq  # Groq chat model
-from langchain_core.prompts import ChatPromptTemplate  # Prompt template
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder  # Prompt template
 from langchain_core.output_parsers import StrOutputParser  # Parses LLM output to string
-from langchain_core.runnables import RunnablePassthrough  # Passes input through a chain step
+from langchain_core.messages import HumanMessage, AIMessage  # Chat message types
 
 
 # Load .env so GROQ_API_KEY (and any other env vars) become available
@@ -42,7 +42,7 @@ load_dotenv()
 # -----------------------------
 st.set_page_config(page_title="PDF Q&A (RAG)", page_icon=":books:")
 st.title("PDF Question Answering")
-st.caption("Upload a PDF, ask a question, and get an answer powered by RAG + Groq.")
+st.caption("Upload a PDF, ask questions, and follow up — answers stay on screen as a chat.")
 
 
 # -----------------------------
@@ -94,10 +94,10 @@ def format_docs(docs):
     return "\n\n".join(doc.page_content for doc in docs)
 
 
-def build_qa_chain(vector_store):
+def build_components(vector_store):
     """
-    Build a simple RAG chain:
-    retriever -> prompt -> Groq LLM -> string output.
+    Build the retriever, prompt, LLM, and parser used per question.
+    Returns them separately so we can plug in chat history at call time.
     """
     # Step 6: Create a retriever that returns the top-k most relevant chunks
     retriever = vector_store.as_retriever(search_kwargs={"k": 4})
@@ -105,15 +105,17 @@ def build_qa_chain(vector_store):
     # Step 7a: Initialize the Groq chat model (uses GROQ_API_KEY from the environment)
     llm = ChatGroq(model="llama-3.1-8b-instant", temperature=0)
 
-    # Step 7b: Define a simple prompt that grounds the answer in the retrieved context
+    # Step 7b: Prompt with a slot for the prior chat history (for follow-up questions)
     prompt = ChatPromptTemplate.from_messages(
         [
             (
                 "system",
                 "You are a helpful assistant answering questions about a PDF. "
                 "Use ONLY the provided context to answer. "
-                "If the answer is not in the context, say you don't know.",
+                "If the answer is not in the context, say you don't know. "
+                "Use the prior chat history to understand follow-up questions.",
             ),
+            MessagesPlaceholder("history"),
             (
                 "human",
                 "Context:\n{context}\n\nQuestion: {question}\n\nAnswer:",
@@ -121,18 +123,34 @@ def build_qa_chain(vector_store):
         ]
     )
 
-    # Step 7c: Compose the chain using LangChain Runnables
-    # - "context" is filled by retrieving relevant docs and formatting them
-    # - "question" is passed straight through
-    # - The prompt is sent to the Groq LLM
-    # - StrOutputParser returns a plain string answer
-    chain = (
-        {"context": retriever | format_docs, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
+    parser = StrOutputParser()
+    return retriever, prompt, llm, parser
+
+
+def answer_question(question: str):
+    """Run the RAG pipeline for one question, using the stored chat history."""
+    retriever = st.session_state.retriever
+    prompt = st.session_state.prompt
+    llm = st.session_state.llm
+    parser = st.session_state.parser
+
+    # Retrieve relevant chunks for THIS question
+    docs = retriever.invoke(question)
+    context = format_docs(docs)
+
+    # Convert stored UI messages into LangChain message objects for the prompt
+    history_messages = []
+    for m in st.session_state.messages:
+        if m["role"] == "user":
+            history_messages.append(HumanMessage(content=m["content"]))
+        else:
+            history_messages.append(AIMessage(content=m["content"]))
+
+    # Build the chain on the fly and invoke it
+    chain = prompt | llm | parser
+    return chain.invoke(
+        {"context": context, "question": question, "history": history_messages}
     )
-    return chain
 
 
 # -----------------------------
@@ -143,33 +161,75 @@ def build_qa_chain(vector_store):
 if not os.getenv("GROQ_API_KEY"):
     st.error("GROQ_API_KEY is not set. Add it to your environment (.env) and reload.")
 
-# Use Streamlit session state to keep the vector store and chain between reruns
+# Session state: vector store, chain components, chat history, and current PDF name
 if "vector_store" not in st.session_state:
     st.session_state.vector_store = None
-if "chain" not in st.session_state:
-    st.session_state.chain = None
+if "retriever" not in st.session_state:
+    st.session_state.retriever = None
+if "prompt" not in st.session_state:
+    st.session_state.prompt = None
+if "llm" not in st.session_state:
+    st.session_state.llm = None
+if "parser" not in st.session_state:
+    st.session_state.parser = None
 if "pdf_name" not in st.session_state:
     st.session_state.pdf_name = None
+if "messages" not in st.session_state:
+    st.session_state.messages = []  # list of {"role": "user"|"assistant", "content": str}
 
-# Step 1 (UI): Let the user upload one PDF
-uploaded_file = st.file_uploader("Upload a PDF", type=["pdf"])
+# Sidebar: PDF upload + clear-chat control
+with st.sidebar:
+    st.header("PDF")
+    # Step 1 (UI): Let the user upload one PDF
+    uploaded_file = st.file_uploader("Upload a PDF", type=["pdf"])
+    # Button to wipe the chat history (keeps the indexed PDF)
+    if st.button("Clear chat history", use_container_width=True):
+        st.session_state.messages = []
+        st.rerun()
 
-# When a new PDF is uploaded, (re)build the vector store and chain
+# When a new PDF is uploaded, (re)build the vector store and reset chat history
 if uploaded_file is not None and uploaded_file.name != st.session_state.pdf_name:
     with st.spinner("Reading PDF, creating embeddings, and indexing..."):
         vector_store, num_chunks = build_vector_store(uploaded_file)
+        retriever, prompt, llm, parser = build_components(vector_store)
         st.session_state.vector_store = vector_store
-        st.session_state.chain = build_qa_chain(vector_store)
+        st.session_state.retriever = retriever
+        st.session_state.prompt = prompt
+        st.session_state.llm = llm
+        st.session_state.parser = parser
         st.session_state.pdf_name = uploaded_file.name
+        st.session_state.messages = []  # Fresh PDF -> fresh conversation
     st.success(f"Indexed '{uploaded_file.name}' into {num_chunks} chunks.")
 
-# Step 8 (UI): Ask a question and show the answer
-if st.session_state.chain is not None:
-    question = st.text_input("Ask a question about the PDF:")
-    if question:
-        with st.spinner("Thinking..."):
-            answer = st.session_state.chain.invoke(question)
-        st.subheader("Answer")
-        st.write(answer)
+# Render the running chat history (every previous turn stays on screen)
+for m in st.session_state.messages:
+    with st.chat_message(m["role"]):
+        st.markdown(m["content"])
+
+# Step 8 (UI): Chat input — only shown once a PDF is indexed
+if st.session_state.retriever is not None:
+    user_input = st.chat_input("Ask a question about the PDF...")
+    if user_input:
+        # Show the user message immediately
+        st.session_state.messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.markdown(user_input)
+
+        # Generate and show the assistant's answer
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                # NOTE: history passed to the LLM is everything BEFORE this new user turn
+                history_before = st.session_state.messages[:-1]
+                # Temporarily swap so answer_question sees only prior turns as history
+                full = st.session_state.messages
+                st.session_state.messages = history_before
+                try:
+                    answer = answer_question(user_input)
+                finally:
+                    st.session_state.messages = full
+            st.markdown(answer)
+
+        # Persist the assistant's reply in the chat history
+        st.session_state.messages.append({"role": "assistant", "content": answer})
 else:
-    st.info("Upload a PDF to get started.")
+    st.info("Upload a PDF in the sidebar to start chatting.")
