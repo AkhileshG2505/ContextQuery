@@ -128,7 +128,8 @@ def build_components(vector_store):
 
 
 def answer_question(question: str):
-    """Run the RAG pipeline for one question, using the stored chat history."""
+    """Run the RAG pipeline for one question, using the stored chat history.
+    Returns (answer_text, list_of_source_dicts)."""
     retriever = st.session_state.retriever
     prompt = st.session_state.prompt
     llm = st.session_state.llm
@@ -137,6 +138,14 @@ def answer_question(question: str):
     # Retrieve relevant chunks for THIS question
     docs = retriever.invoke(question)
     context = format_docs(docs)
+
+    # Build a lightweight, serializable list of sources for display
+    sources = []
+    for d in docs:
+        # PyPDFLoader sets metadata["page"] as a 0-based page index
+        page = d.metadata.get("page")
+        page_label = (page + 1) if isinstance(page, int) else "?"
+        sources.append({"page": page_label, "text": d.page_content})
 
     # Convert stored UI messages into LangChain message objects for the prompt
     history_messages = []
@@ -148,9 +157,22 @@ def answer_question(question: str):
 
     # Build the chain on the fly and invoke it
     chain = prompt | llm | parser
-    return chain.invoke(
+    answer = chain.invoke(
         {"context": context, "question": question, "history": history_messages}
     )
+    return answer, sources
+
+
+def render_sources(sources):
+    """Render the retrieved chunks under an answer as an expandable section."""
+    if not sources:
+        return
+    with st.expander(f"Sources ({len(sources)})"):
+        for i, s in enumerate(sources, start=1):
+            st.markdown(f"**[{i}] Page {s['page']}**")
+            st.write(s["text"])
+            if i < len(sources):
+                st.divider()
 
 
 # -----------------------------
@@ -205,6 +227,9 @@ if uploaded_file is not None and uploaded_file.name != st.session_state.pdf_name
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
+        # Show sources for assistant messages that have them attached
+        if m["role"] == "assistant" and m.get("sources"):
+            render_sources(m["sources"])
 
 # Step 8 (UI): Chat input — only shown once a PDF is indexed
 if st.session_state.retriever is not None:
@@ -224,12 +249,15 @@ if st.session_state.retriever is not None:
                 full = st.session_state.messages
                 st.session_state.messages = history_before
                 try:
-                    answer = answer_question(user_input)
+                    answer, sources = answer_question(user_input)
                 finally:
                     st.session_state.messages = full
             st.markdown(answer)
+            render_sources(sources)
 
-        # Persist the assistant's reply in the chat history
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+        # Persist the assistant's reply (with its sources) in the chat history
+        st.session_state.messages.append(
+            {"role": "assistant", "content": answer, "sources": sources}
+        )
 else:
     st.info("Upload a PDF in the sidebar to start chatting.")
