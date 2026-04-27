@@ -1,17 +1,57 @@
 # See https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files for more about ignoring files.
 
-# compiled output
+# ==========================================
+# Python & Project Environment
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.env
+
+# ChromaDB local storage
+chroma_db/
+chroma/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# ==========================================
+# Replit & AI Generator Junk
+# ==========================================
+.replit
+.replitignore
+replit.md
+artifacts/
+.cache/
+.local/
+
+# ==========================================
+# JavaScript / Node.js Leftovers 
+# (Hiding AI scaffold files not needed for Python)
+# ==========================================
+node_modules/
+package.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+tsconfig.json
+tsconfig.base.json
+.npmrc
+
+# Legacy compiled output
 dist
 tmp
 out-tsc
 *.tsbuildinfo
 .expo
 .expo-shared
+/typings
 
-# dependencies
-node_modules
-
-# IDEs and editors
+# ==========================================
+# IDEs and Editors
+# ==========================================
 /.idea
 .project
 .classpath
@@ -19,6 +59,8 @@ node_modules
 *.launch
 .settings/
 *.sublime-workspace
+.cursor/rules/nx-rules.mdc
+.github/instructions/nx.instructions.md
 
 # IDE - VSCode
 .vscode/*
@@ -27,7 +69,16 @@ node_modules
 !.vscode/launch.json
 !.vscode/extensions.json
 
-# misc
+# ==========================================
+# System Files
+# ==========================================
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ==========================================
+# Misc Logs & Caches
+# ==========================================
 /.sass-cache
 /connect.lock
 /coverage
@@ -35,15 +86,3 @@ node_modules
 npm-debug.log
 yarn-error.log
 testem.log
-/typings
-
-# System Files
-.DS_Store
-Thumbs.db
-
-.cursor/rules/nx-rules.mdc
-.github/instructions/nx.instructions.md
-
-# Replit
-.cache/
-.local/
